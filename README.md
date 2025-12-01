@@ -92,7 +92,7 @@ python convex_polygons.py
 
 ```
 convex-polygons/
-├── Main.py     # Основной файл с кодом программы
+├── main.py                # Основной файл с кодом программы
 ├── requirements.txt       # Файл зависимостей
 ├── README.md              # Документация (этот файл)
 ├── .gitignore             # Файл для игнорирования ненужных файлов в Git
