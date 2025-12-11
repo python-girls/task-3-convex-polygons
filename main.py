@@ -9,6 +9,8 @@ class Point:
         self.y = y
 
     def __eq__(self, other):
+        if not isinstance(other, Point):
+            return False
         return abs(self.x - other.x) < 1e-10 and abs(self.y - other.y) < 1e-10
 
     def __hash__(self):
@@ -35,6 +37,10 @@ class ConvexPolygon:
         # упорядочиваем вершины против часовой стрелки
         self._order_vertices_ccw()
 
+    def _cross_product(self, a: Point, b: Point, c: Point) -> float:
+        """Векторное произведение (b-a) x (c-a)"""
+        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+
     def _is_convex(self) -> bool:
         n = len(self.vertices)
         if n < 3:
@@ -42,13 +48,11 @@ class ConvexPolygon:
 
         sign = 0
         for i in range(n):
-            # векторное произведение для трех последовательных точек
-            dx1 = self.vertices[(i + 1) % n].x - self.vertices[i].x
-            dy1 = self.vertices[(i + 1) % n].y - self.vertices[i].y
-            dx2 = self.vertices[(i + 2) % n].x - self.vertices[(i + 1) % n].x
-            dy2 = self.vertices[(i + 2) % n].y - self.vertices[(i + 1) % n].y
-
-            cross = dx1 * dy2 - dy1 * dx2
+            cross = self._cross_product(
+                self.vertices[i],
+                self.vertices[(i + 1) % n],
+                self.vertices[(i + 2) % n]
+            )
 
             if abs(cross) > 1e-10:
                 if sign == 0:
@@ -59,19 +63,35 @@ class ConvexPolygon:
         return True
 
     def _order_vertices_ccw(self):
+        """Упорядочивание вершин против часовой стрелки"""
         if len(self.vertices) < 3:
             return
 
-        # находим центр многоугольника
-        center_x = sum(p.x for p in self.vertices) / len(self.vertices)
-        center_y = sum(p.y for p in self.vertices) / len(self.vertices)
-        center = Point(center_x, center_y)
+        # Находим самую левую-нижнюю точку как начальную
+        start_idx = 0
+        for i in range(1, len(self.vertices)):
+            if (self.vertices[i].x < self.vertices[start_idx].x or
+                    (math.isclose(self.vertices[i].x, self.vertices[start_idx].x) and
+                     self.vertices[i].y < self.vertices[start_idx].y)):
+                start_idx = i
 
-        # сортируем вершины по углу относительно центра
-        def angle_from_center(point: Point):
-            return math.atan2(point.y - center_y, point.x - center_x)
+        # Переупорядочиваем список вершин
+        self.vertices = self.vertices[start_idx:] + self.vertices[:start_idx]
 
-        self.vertices.sort(key=angle_from_center)
+        # Сортируем оставшиеся вершины по полярному углу относительно начальной
+        if len(self.vertices) > 1:
+            reference = self.vertices[0]
+            self.vertices[1:] = sorted(
+                self.vertices[1:],
+                key=lambda p: math.atan2(p.y - reference.y, p.x - reference.x)
+            )
+
+            # Проверяем направление (должно быть против часовой стрелки)
+            if len(self.vertices) >= 3:
+                cross = self._cross_product(self.vertices[0], self.vertices[1], self.vertices[2])
+                if cross < 0:
+                    # Если по часовой - разворачиваем
+                    self.vertices = [self.vertices[0]] + self.vertices[1:][::-1]
 
     def perimeter(self) -> float:
         perimeter = 0.0
@@ -80,7 +100,7 @@ class ConvexPolygon:
         for i in range(n):
             p1 = self.vertices[i]
             p2 = self.vertices[(i + 1) % n]
-            perimeter += math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2)
+            perimeter += math.hypot(p2.x - p1.x, p2.y - p1.y)
 
         return perimeter
 
@@ -91,194 +111,105 @@ class ConvexPolygon:
         for i in range(n):
             p1 = self.vertices[i]
             p2 = self.vertices[(i + 1) % n]
-            area += (p1.x * p2.y - p2.x * p1.y)
+            area += p1.x * p2.y - p2.x * p1.y
 
         return abs(area) / 2.0
 
     def contains_point(self, point: Tuple[float, float]) -> bool:
-        """Более эффективный метод для выпуклых многоугольников"""
+        """Проверка точки в выпуклом многоугольнике методом углов"""
         test_point = Point(point[0], point[1])
         n = len(self.vertices)
 
-        # Для выпуклого многоугольника проверяем знаки векторных произведений
-        sign = None
+        # Если точка совпадает с вершиной
+        for vertex in self.vertices:
+            if vertex == test_point:
+                return True
+
+        total_angle = 0.0
         for i in range(n):
             a = self.vertices[i]
             b = self.vertices[(i + 1) % n]
 
-            cross = (b.x - a.x) * (test_point.y - a.y) - (b.y - a.y) * (test_point.x - a.x)
-
+            # Проверка нахождения точки на ребре
+            cross = self._cross_product(a, b, test_point)
             if abs(cross) < 1e-10:
-                continue  # Точка на ребре
+                # Проверяем, лежит ли точка на отрезке
+                min_x, max_x = min(a.x, b.x), max(a.x, b.x)
+                min_y, max_y = min(a.y, b.y), max(a.y, b.y)
+                if (min_x - 1e-10 <= test_point.x <= max_x + 1e-10 and
+                        min_y - 1e-10 <= test_point.y <= max_y + 1e-10):
+                    return True
 
-            if sign is None:
-                sign = cross > 0
-            elif (cross > 0) != sign:
-                return False
+            # Векторы от точки к вершинам
+            v1 = Point(a.x - test_point.x, a.y - test_point.y)
+            v2 = Point(b.x - test_point.x, b.y - test_point.y)
 
-        return True
+            # Вычисляем угол между векторами
+            dot = v1.x * v2.x + v1.y * v2.y
+            norm1 = math.hypot(v1.x, v1.y)
+            norm2 = math.hypot(v2.x, v2.y)
+
+            if norm1 < 1e-10 or norm2 < 1e-10:
+                continue
+
+            cos_angle = dot / (norm1 * norm2)
+            cos_angle = max(-1.0, min(1.0, cos_angle))
+            angle = math.acos(cos_angle)
+
+            # Определяем знак угла
+            cross = v1.x * v2.y - v1.y * v2.x
+            if cross < 0:
+                angle = -angle
+
+            total_angle += angle
+
+        # Точка внутри, если сумма углов ≈ ±2π
+        return abs(abs(total_angle) - 2 * math.pi) < 1e-10
 
     def contains_polygon(self, other: 'ConvexPolygon') -> bool:
-        # проверяем все вершины другого многоугольника
+        """Проверяет, содержит ли текущий многоугольник другой"""
+        # Проверяем все вершины другого многоугольника
         for vertex in other.vertices:
             if not self.contains_point((vertex.x, vertex.y)):
                 return False
         return True
 
-    def _cross_product(self, a: Point, b: Point, c: Point) -> float:
-        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-
     def _lines_intersect(self, a: Point, b: Point, c: Point, d: Point) -> bool:
         """Проверяет пересекаются ли два отрезка"""
 
-        def ccw(A, B, C):
-            return (C.y - A.y) * (B.x - A.x) > (B.y - A.y) * (C.x - A.x)
+        def orientation(p, q, r):
+            val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y)
+            if abs(val) < 1e-10:
+                return 0  # коллинеарны
+            return 1 if val > 0 else 2  # по часовой или против
 
-        return ccw(a, c, d) != ccw(b, c, d) and ccw(a, b, c) != ccw(a, b, d)
+        def on_segment(p, q, r):
+            return (min(p.x, r.x) - 1e-10 <= q.x <= max(p.x, r.x) + 1e-10 and
+                    min(p.y, r.y) - 1e-10 <= q.y <= max(p.y, r.y) + 1e-10)
 
-    def _do_polygons_intersect(self, other: 'ConvexPolygon') -> bool:
-        """Проверяет, пересекаются ли многоугольники"""
-        # Проверяем если одна вершина одного многоугольника находится внутри другого
-        for vertex in self.vertices:
-            if other.contains_point((vertex.x, vertex.y)):
-                return True
-        for vertex in other.vertices:
-            if self.contains_point((vertex.x, vertex.y)):
-                return True
+        o1 = orientation(a, b, c)
+        o2 = orientation(a, b, d)
+        o3 = orientation(c, d, a)
+        o4 = orientation(c, d, b)
 
-        # Проверяем пересечения ребер
-        n1, n2 = len(self.vertices), len(other.vertices)
-        for i in range(n1):
-            for j in range(n2):
-                a, b = self.vertices[i], self.vertices[(i + 1) % n1]
-                c, d = other.vertices[j], other.vertices[(j + 1) % n2]
+        # Общий случай
+        if o1 != o2 and o3 != o4:
+            return True
 
-                if self._lines_intersect(a, b, c, d):
-                    return True
+        # Специальные случаи (коллинеарность)
+        if o1 == 0 and on_segment(a, c, b):
+            return True
+        if o2 == 0 and on_segment(a, d, b):
+            return True
+        if o3 == 0 and on_segment(c, a, d):
+            return True
+        if o4 == 0 and on_segment(c, b, d):
+            return True
 
         return False
 
-    def intersects(self, other: 'ConvexPolygon') -> bool:
-        """Проверяет пересекаются ли два выпуклых многоугольника"""
-        return self._do_polygons_intersect(other)
-
-    def _is_inside_clip_edge(self, point: Point, edge_start: Point, edge_end: Point) -> bool:
-        # для выпуклого многоугольника проверяем по векторному произведению
-        cross = self._cross_product(edge_start, edge_end, point)
-        return cross >= -1e-10
-
-    def _line_intersection(self, a: Point, b: Point, c: Point, d: Point) -> Optional[Point]:
-        denom = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x)
-
-        if abs(denom) < 1e-10:
-            return None  # Параллельные линии
-
-        t = ((a.x - c.x) * (c.y - d.y) - (a.y - c.y) * (c.x - d.x)) / denom
-        u = -((a.x - b.x) * (a.y - c.y) - (a.y - b.y) * (a.x - c.x)) / denom
-
-        if 0 <= t <= 1 and 0 <= u <= 1:
-            x = a.x + t * (b.x - a.x)
-            y = a.y + t * (b.y - a.y)
-            return Point(x, y)
-
-        return None
-
-    def intersection(self, other: 'ConvexPolygon') -> Optional['ConvexPolygon']:
-        """Находит пересечение двух выпуклых многоугольников используя алгоритм Сазерленда-Ходжмана"""
-        # Создаем копию первого многоугольника как начальный клиппируемый многоугольник
-        output_polygon = self.vertices.copy()
-
-        # Проходим по всем ребрам второго многоугольника как отсекающим плоскостям
-        n = len(other.vertices)
-        for i in range(n):
-            if not output_polygon:
-                return None
-
-            # Текущее отсекающее ребро
-            clip_start = other.vertices[i]
-            clip_end = other.vertices[(i + 1) % n]
-
-            input_list = output_polygon
-            output_polygon = []
-
-            # Вектор нормали к отсекающему ребру (направлен внутрь второго многоугольника)
-            edge_vec = Point(clip_end.x - clip_start.x, clip_end.y - clip_start.y)
-            normal = Point(-edge_vec.y, edge_vec.x)  # Перпендикуляр против часовой стрелки
-
-            prev_point = input_list[-1]
-            prev_inside = self._is_inside(prev_point, clip_start, normal)
-
-            for current_point in input_list:
-                current_inside = self._is_inside(current_point, clip_start, normal)
-
-                # Если текущая точка внутри - добавляем ее
-                if current_inside:
-                    # Если предыдущая точка была снаружи - добавляем пересечение
-                    if not prev_inside:
-                        intersection = self._compute_intersection(prev_point, current_point, clip_start, clip_end)
-                        if intersection:
-                            output_polygon.append(intersection)
-                    output_polygon.append(current_point)
-                else:
-                    # Если предыдущая точка была внутри - добавляем пересечение
-                    if prev_inside:
-                        intersection = self._compute_intersection(prev_point, current_point, clip_start, clip_end)
-                        if intersection:
-                            output_polygon.append(intersection)
-
-                prev_point = current_point
-                prev_inside = current_inside
-
-        if len(output_polygon) < 3:
-            return None
-
-        try:
-            return ConvexPolygon(output_polygon)
-        except ValueError:
-            return None
-
-    def _is_inside(self, point: Point, clip_point: Point, normal: Point) -> bool:
-        """Проверяет, находится ли точка внутри отсекающего ребра"""
-        # Вектор от точки отсечения к проверяемой точке
-        to_point = Point(point.x - clip_point.x, point.y - clip_point.y)
-
-        # Скалярное произведение с нормалью
-        dot_product = to_point.x * normal.x + to_point.y * normal.y
-
-        return dot_product >= -1e-10
-
-    def _compute_intersection(self, p1: Point, p2: Point, clip_start: Point, clip_end: Point) -> Optional[Point]:
-        """Вычисляет точку пересечения двух отрезков"""
-        # Параметрическое представление первого отрезка: p1 + t*(p2 - p1)
-        # Параметрическое представление второго отрезка: clip_start + u*(clip_end - clip_start)
-
-        denom = (p1.x - p2.x) * (clip_start.y - clip_end.y) - (p1.y - p2.y) * (clip_start.x - clip_end.x)
-
-        if abs(denom) < 1e-10:
-            return None  # Отрезки параллельны
-
-        t = ((p1.x - clip_start.x) * (clip_start.y - clip_end.y) - (p1.y - clip_start.y) * (
-                    clip_start.x - clip_end.x)) / denom
-        u = -((p1.x - p2.x) * (p1.y - clip_start.y) - (p1.y - p2.y) * (p1.x - clip_start.x)) / denom
-
-        if 0 <= t <= 1 and 0 <= u <= 1:
-            x = p1.x + t * (p2.x - p1.x)
-            y = p1.y + t * (p2.y - p1.y)
-            return Point(x, y)
-
-        return None
-
     def _do_polygons_intersect(self, other: 'ConvexPolygon') -> bool:
-        """Проверяет, пересекаются ли многоугольники (более надежная версия)"""
-        # Проверяем если одна вершина одного многоугольника находится внутри другого
-        for vertex in self.vertices:
-            if other.contains_point((vertex.x, vertex.y)):
-                return True
-        for vertex in other.vertices:
-            if self.contains_point((vertex.x, vertex.y)):
-                return True
-
-        # Проверяем пересечения ребер используя Separating Axis Theorem (SAT) для выпуклых многоугольников
+        """Проверяет, пересекаются ли многоугольники с использованием SAT"""
         polygons = [self, other]
 
         for polygon in polygons:
@@ -291,7 +222,7 @@ class ConvexPolygon:
                 p2 = polygon.vertices[(i + 1) % n]
 
                 edge = Point(p2.x - p1.x, p2.y - p1.y)
-                normal = Point(-edge.y, edge.x)  # Перпендикуляр
+                normal = Point(-edge.y, edge.x)  # Перпендикуляр против часовой стрелки
 
                 # Проецируем первый многоугольник на нормаль
                 min1, max1 = float('inf'), float('-inf')
@@ -313,14 +244,124 @@ class ConvexPolygon:
 
         return True
 
+    def intersects(self, other: 'ConvexPolygon') -> bool:
+        """Проверяет пересекаются ли два выпуклых многоугольника"""
+        # Сначала быстрая проверка ограничивающих прямоугольников
+        bbox1 = self.get_bounding_box()
+        bbox2 = other.get_bounding_box()
+
+        # Проверка пересечения ограничивающих прямоугольников
+        if (bbox1[2] < bbox2[0] or bbox1[0] > bbox2[2] or
+                bbox1[3] < bbox2[1] or bbox1[1] > bbox2[3]):
+            return False
+
+        # Если ограничивающие прямоугольники пересекаются, используем SAT
+        return self._do_polygons_intersect(other)
+
+    def intersection(self, other: 'ConvexPolygon') -> Optional['ConvexPolygon']:
+        """Находит пересечение двух выпуклых многоугольников"""
+        # Простой алгоритм для выпуклых многоугольников:
+        # 1. Находим все точки пересечения ребер
+        # 2. Добавляем вершины, лежащие внутри другого многоугольника
+        # 3. Строим выпуклую оболочку
+
+        intersection_points = []
+
+        # Вершины первого многоугольника внутри второго
+        for vertex in self.vertices:
+            if other.contains_point((vertex.x, vertex.y)):
+                intersection_points.append(vertex)
+
+        # Вершины второго многоугольника внутри первого
+        for vertex in other.vertices:
+            if self.contains_point((vertex.x, vertex.y)):
+                intersection_points.append(vertex)
+
+        # Точки пересечения ребер
+        n1, n2 = len(self.vertices), len(other.vertices)
+        for i in range(n1):
+            a1 = self.vertices[i]
+            a2 = self.vertices[(i + 1) % n1]
+
+            for j in range(n2):
+                b1 = other.vertices[j]
+                b2 = other.vertices[(j + 1) % n2]
+
+                intersection = self._compute_intersection(a1, a2, b1, b2)
+                if intersection:
+                    intersection_points.append(intersection)
+
+        # Удаляем дубликаты
+        unique_points = []
+        for point in intersection_points:
+            if not any(p == point for p in unique_points):
+                unique_points.append(point)
+
+        if len(unique_points) < 3:
+            return None
+
+        # Строим выпуклую оболочку
+        try:
+            return self._convex_hull(unique_points)
+        except ValueError:
+            return None
+
+    def _compute_intersection(self, p1: Point, p2: Point, q1: Point, q2: Point) -> Optional[Point]:
+        """Вычисляет точку пересечения двух отрезков"""
+        # Параметрическое представление: p1 + t*(p2-p1) = q1 + u*(q2-q1)
+        denom = (p2.x - p1.x) * (q2.y - q1.y) - (p2.y - p1.y) * (q2.x - q1.x)
+
+        if abs(denom) < 1e-10:
+            return None  # Параллельны или коллинеарны
+
+        t = ((q1.x - p1.x) * (q2.y - q1.y) - (q1.y - p1.y) * (q2.x - q1.x)) / denom
+        u = ((q1.x - p1.x) * (p2.y - p1.y) - (q1.y - p1.y) * (p2.x - p1.x)) / denom
+
+        if 0 <= t <= 1 and 0 <= u <= 1:
+            x = p1.x + t * (p2.x - p1.x)
+            y = p1.y + t * (p2.y - p1.y)
+            return Point(x, y)
+
+        return None
+
+    def _convex_hull(self, points: List[Point]) -> 'ConvexPolygon':
+        """Строит выпуклую оболочку для набора точек (алгоритм Грэхема)"""
+        if len(points) < 3:
+            raise ValueError("Нужно хотя бы 3 точки для выпуклой оболочки")
+
+        # Находим самую левую-нижнюю точку
+        start_point = min(points, key=lambda p: (p.x, p.y))
+
+        # Сортируем по полярному углу относительно start_point
+        def polar_angle(p):
+            angle = math.atan2(p.y - start_point.y, p.x - start_point.x)
+            return angle
+
+        sorted_points = sorted([p for p in points if p != start_point], key=polar_angle)
+
+        # Строим выпуклую оболочку
+        hull = [start_point]
+
+        for point in sorted_points:
+            while len(hull) >= 2:
+                a, b = hull[-2], hull[-1]
+                cross = self._cross_product(a, b, point)
+                if cross <= 0:  # Удаляем точку, если поворот по часовой или коллинеарны
+                    hull.pop()
+                else:
+                    break
+            hull.append(point)
+
+        return ConvexPolygon(hull)
+
     def triangulate(self) -> List[List[Tuple[float, float]]]:
+        """Триангуляция выпуклого многоугольника методом веера"""
         if len(self.vertices) < 3:
             return []
 
         triangles = []
         n = len(self.vertices)
 
-        # для выпуклого многоугольника используем простой метод веера
         for i in range(1, n - 1):
             triangle = [
                 (self.vertices[0].x, self.vertices[0].y),
@@ -331,7 +372,23 @@ class ConvexPolygon:
 
         return triangles
 
+    def get_bounding_box(self) -> Tuple[float, float, float, float]:
+        """Возвращает ограничивающий прямоугольник (min_x, min_y, max_x, max_y)"""
+        if not self.vertices:
+            return 0.0, 0.0, 0.0, 0.0
+
+        min_x = min(v.x for v in self.vertices)
+        max_x = max(v.x for v in self.vertices)
+        min_y = min(v.y for v in self.vertices)
+        max_y = max(v.y for v in self.vertices)
+
+        return min_x, min_y, max_x, max_y
+
     def plot(self, color='blue', label=None, show_vertices=True):
+        """Визуализация многоугольника"""
+        if not self.vertices:
+            return
+
         x = [p.x for p in self.vertices] + [self.vertices[0].x]
         y = [p.y for p in self.vertices] + [self.vertices[0].y]
 
@@ -347,6 +404,10 @@ class ConvexPolygon:
 
     def __repr__(self):
         return self.__str__()
+
+
+# Остальные функции (visualize_polygons, input_polygon, input_point, main) остаются без изменений
+# ...
 
 
 def visualize_polygons(polygons, title="Визуализация многоугольников", current_idx=None):
