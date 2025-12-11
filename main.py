@@ -406,10 +406,6 @@ class ConvexPolygon:
         return self.__str__()
 
 
-# Остальные функции (visualize_polygons, input_polygon, input_point, main) остаются без изменений
-# ...
-
-
 def visualize_polygons(polygons, title="Визуализация многоугольников", current_idx=None):
     """Функция для визуализации списка многоугольников"""
     if not polygons:
@@ -775,3 +771,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
